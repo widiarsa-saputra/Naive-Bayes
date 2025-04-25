@@ -1,0 +1,145 @@
+from collections import defaultdict, Counter
+import pandas as pd
+import os, json
+
+class NaiveBayesClass:
+    def __init__(self, X=None, Y=None):
+        self.X = X
+        self.Y = Y
+
+        if X != None:
+            self.dimension = self.get_dimensions(self.Y)
+            self.unique_X = list(set([j for i in self.X for j in i]))
+            if self.dimension == 1:
+                self.unique_Y = list(set(self.Y))
+            elif self.dimension == 2:
+                self.unique_Y = list(set(y for sublist in Y for y in sublist))
+            self.prior = self.prior_probability()
+            self.posterior = self.posterior_probability()
+
+    def get_dimensions(self, arr):
+        if isinstance(arr, list):
+            if isinstance(arr[0], list):
+                return 2
+            else:
+                return 1
+        else:
+            raise ValueError("Y must be a list")
+    
+    def prior_probability(self):
+        
+        prior = defaultdict(float)
+
+        if self.dimension == 1:
+            denominator = len(self.Y)
+            nominator = Counter(self.Y)        
+        elif self.dimension == 2:
+            denominator = sum(len(y) for y in self.Y)
+            flattened_X = [y for sublist in self.Y for y in sublist]
+            nominator = Counter(flattened_X)
+        else:
+            raise ValueError("Supported Y dimensions only single class label (1D) or sequence class label (2D)")
+
+        for key, val in nominator.items():
+            prior[key] = val / denominator
+        
+        return prior
+    
+    def posterior_probability(self):
+        posterior = defaultdict(lambda: defaultdict(float))
+        nominator = defaultdict(Counter)
+        denominator = defaultdict(int)
+
+        for i in range(len(self.X)):
+            for j in range(len(self.X[i])):
+                if self.dimension == 1:
+                    nominator[self.Y[i]][self.X[i][j]] += 1
+                elif self.dimension == 2:
+                    nominator[self.Y[i][j]][self.X[i][j]] += 1
+                    denominator[self.Y[i][j]] += 1
+            if self.dimension == 1:
+                denominator[self.Y[i]] += len(self.X[i])
+                
+        
+        for y in self.unique_Y:
+            for x in self.unique_X:
+                posterior[y][x] = (nominator[y][x] + 1) / (denominator[y] + len(self.unique_X))  # Laplace smoothing
+        
+        return posterior
+
+    def predict(self, X):
+        if isinstance(X, str):
+            X = X.split()
+
+        path = []
+
+        for i in range(len(X)):
+            max_prob = -float('inf')
+            predicted_class = None
+            
+            for k in self.prior.keys():
+                prob = self.prior[k] * self.posterior[k].get(X[i], 0)
+                if prob > max_prob:
+                    max_prob = prob
+                    predicted_class = k
+            path.append(predicted_class)
+            
+        return path
+
+    def save_parameters(self, filepath="params.json"):
+        """
+        this function is used for saving the parameter model into .json format
+        """
+        if len(filepath.split(".")) < 2 or 'json' not in filepath.split("."):
+            raise ValueError("Filepath must be in .json format")
+        os.makedirs("model", exist_ok=True)
+        data = {
+            "prior" : dict(self.prior),
+            "posterior" : {k: dict(v) for k, v in self.posterior.items()},
+        }
+        with open(f"model/{filepath}", "w") as f:
+            json.dump(data, f, indent=4)
+            print(f"Saved model in model/{filepath}")
+    
+    def load_parameters(self, filepath="params.json"):
+        """
+        
+        """
+        with open(filepath, "r") as f:
+            data = json.load(f) # (library: json)
+            self.prior = defaultdict(float, data["prior"]) #(library: collections)
+            self.posterior = {k: defaultdict(float, v) for k, v in data["posterior"].items()} #(library: collections)
+
+    def accuracy(self, X, Y, verbose=True):
+        """
+        AccuracY = true label recognized /  all label sequence
+        """
+
+        states = list(set([s for seq in Y for s in seq]))
+        if verbose:
+            print(f"\t{'label':<10} | {'accuracY'}\n")
+        tp_all = 0
+        total_all = sum([len(seq) for seq in Y])
+        
+        for s in states:
+            tp = 0
+            total = 0
+            for i in range(len(X)):
+                Y_pred = self.predict(X[i])
+                for j in range(len(Y_pred)):
+                    if Y[i][j] == s:
+                        if Y_pred[j] == Y[i][j]:
+                            tp += 1
+                        total += 1
+            if verbose:
+                print(f"\t{s:<10} | {tp/total:.2f}")
+        
+        for i in range(len(X)):
+            Y_pred = self.predict(X[i])
+            for j in range(len(Y_pred)):
+                if Y_pred[j] == Y[i][j]:
+                    tp_all += 1
+        if verbose:
+            print(f"\n{'Accuracy total':>10} | {tp_all/total_all:.2f}")
+        return tp_all/total_all
+        
