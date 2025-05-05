@@ -1,11 +1,13 @@
 from collections import defaultdict, Counter
 import pandas as pd
 import os, json
+import numpy as np
 
 class NaiveBayesClass:
-    def __init__(self, X=None, Y=None):
+    def __init__(self, X=None, Y=None, type="discreate"):
         self.X = X
         self.Y = Y
+        self.type = type
 
         if X != None:
             self.dimension = self.get_dimensions(self.Y)
@@ -14,8 +16,8 @@ class NaiveBayesClass:
                 self.unique_Y = list(set(self.Y))
             elif self.dimension == 2:
                 self.unique_Y = list(set(y for sublist in Y for y in sublist))
-            self.prior = self.prior_probability()
-            self.posterior = self.posterior_probability()
+            self.prior_probability()
+            self.posterior_probability()
 
     def get_dimensions(self, arr):
         if isinstance(arr, list):
@@ -29,7 +31,6 @@ class NaiveBayesClass:
     def prior_probability(self):
         
         prior = defaultdict(float)
-
         if self.dimension == 1:
             denominator = len(self.Y)
             nominator = Counter(self.Y)        
@@ -41,50 +42,84 @@ class NaiveBayesClass:
             raise ValueError("Supported Y dimensions only single class label (1D) or sequence class label (2D)")
 
         for key, val in nominator.items():
-            prior[key] = val / denominator
+            prior[key] = (val + 1) / (denominator + + len(self.unique_Y))
         
-        return prior
+        self.prior = prior
     
     def posterior_probability(self):
         posterior = defaultdict(lambda: defaultdict(float))
-        nominator = defaultdict(Counter)
-        denominator = defaultdict(int)
+        if self.type == "discreate":
+            nominator = defaultdict(Counter)
+            denominator = defaultdict(int)
 
-        for i in range(len(self.X)):
-            for j in range(len(self.X[i])):
+            for i in range(len(self.X)):
+                for j in range(len(self.X[i])):
+                    if self.dimension == 1:
+                        nominator[self.Y[i]][self.X[i][j]] += 1
+                    elif self.dimension == 2:
+                        nominator[self.Y[i][j]][self.X[i][j]] += 1
+                        denominator[self.Y[i][j]] += 1
                 if self.dimension == 1:
-                    nominator[self.Y[i]][self.X[i][j]] += 1
-                elif self.dimension == 2:
-                    nominator[self.Y[i][j]][self.X[i][j]] += 1
-                    denominator[self.Y[i][j]] += 1
-            if self.dimension == 1:
-                denominator[self.Y[i]] += len(self.X[i])
+                    denominator[self.Y[i]] += len(self.X[i])
                 
-        
-        for y in self.unique_Y:
-            for x in self.unique_X:
-                posterior[y][x] = (nominator[y][x] + 1) / (denominator[y] + len(self.unique_X))  # Laplace smoothing
-        
-        return posterior
-
-    def predict(self, X):
-        if isinstance(X, str):
-            X = X.split()
-
-        path = []
-
-        for i in range(len(X)):
-            max_prob = -float('inf')
-            predicted_class = None
+            for y in self.unique_Y:
+                for x in self.unique_X:
+                    posterior[y][x] = (nominator[y][x] + 1) / (denominator[y] + len(self.unique_X))  # Laplace smoothing
             
-            for k in self.prior.keys():
-                prob = self.prior[k] * self.posterior[k].get(X[i], 0)
-                if prob > max_prob:
-                    max_prob = prob
-                    predicted_class = k
-            path.append(predicted_class)
-            
-        return path
+            self.posterior = posterior
+
+        elif self.type == "continous":
+            mu = defaultdict(lambda: defaultdict(float))
+            variance = defaultdict(lambda: defaultdict(float))
+            denominator = Counter(self.Y)
+
+            for i in range(len(self.X[0])):
+                for k in self.unique_Y:
+                    nominator = sum(self.X[j][i] for j in range(len(self.Y)) if self.Y[j] == k)
+                    mu[i][k] = nominator / denominator[k]
+
+            for i in range(len(self.X[0])):
+                for k in self.unique_Y:
+                    nominator = sum((self.X[j][i] - mu[i][k]) ** 2  for j in range(len(self.Y)) if self.Y[j] == k)
+                    variance[i][k] = nominator / (denominator[k]-1)
+            self.mu = mu
+            self.variance = variance          
+
+    def predict(self, X, type=None):
+            if type is None:
+                type = self.type
+
+            if type == "discreate":
+                max_prob = -float('inf')
+                label_class = None
+                for y in self.prior:
+                    prob = np.log(self.prior[y])
+                    for i in X:
+                        prob += np.log(self.posterior[y].get(i, 1e-6))
+                    if prob > max_prob:
+                        max_prob = prob
+                        label_class = y
+            elif type == "continous":
+                max_prob = -float('inf')
+                label_class = None
+                for k in self.prior.keys():
+                    prob = np.log(self.prior[k])
+                    for i in range(len(X)):
+                        mu = self.mu[str(i)][k]
+                        variance = self.variance[str(i)][k]
+
+                        if variance > 0:
+                            prob += -((X[i] - mu)**2) / (2 * variance) - 0.5 * np.log(2 * np.pi * variance)
+                        else:
+                            prob = -float('inf')
+                        # print(prob, k, max_prob, prob > max_prob, variance)
+                    if prob > max_prob:
+                        max_prob = prob
+                        label_class = k
+                        # print("after condition",max_prob, k)
+
+            return label_class
+
 
     def save_parameters(self, filepath="params.json"):
         """
@@ -93,22 +128,36 @@ class NaiveBayesClass:
         if len(filepath.split(".")) < 2 or 'json' not in filepath.split("."):
             raise ValueError("Filepath must be in .json format")
         os.makedirs("model", exist_ok=True)
-        data = {
-            "prior" : dict(self.prior),
-            "posterior" : {k: dict(v) for k, v in self.posterior.items()},
-        }
+        if self.type == "discreate":
+            data = {
+                "prior" : dict(self.prior),
+                "posterior" : {k: dict(v) for k, v in self.posterior.items()},
+            }
+        elif self.type == "continous":
+                data = {
+                "prior" : dict(self.prior),
+                "mu" : {k: dict(v) for k, v in self.mu.items()},
+                "variance" : {k: dict(v) for k, v in self.variance.items()}
+            }
         with open(f"model/{filepath}", "w") as f:
             json.dump(data, f, indent=4)
             print(f"Saved model in model/{filepath}")
     
     def load_parameters(self, filepath="params.json"):
-        """
-        
-        """
         with open(filepath, "r") as f:
             data = json.load(f) # (library: json)
-            self.prior = defaultdict(float, data["prior"]) #(library: collections)
-            self.posterior = {k: defaultdict(float, v) for k, v in data["posterior"].items()} #(library: collections)
+
+        json_keys = list(data.keys())
+
+        for key in json_keys:
+            if "posterior" == key:
+                self.posterior = {k: defaultdict(float, v) for k, v in data[key].items()} #(library: collections)
+            elif "mu" == key:
+                self.mu = {k: defaultdict(float, v) for k, v in data[key].items()} #(library: collections)
+            elif "variance" == key:
+                self.variance = {k: defaultdict(float, v) for k, v in data[key].items()} #(library: collections)
+            else:
+                self.prior = defaultdict(float, data[key]) #(library: collections)
 
     def accuracy(self, X, Y, verbose=True):
         """
